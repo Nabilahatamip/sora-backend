@@ -1,0 +1,64 @@
+ require('dotenv').config();
+const express = require('express');
+const cors = require('cors');
+const http = require('http');
+const { WebSocketServer } = require('ws');
+
+const app = express();
+const server = http.createServer(app);
+
+// Middleware dulu sebelum apapun
+app.use(cors({ origin: '*', methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'], allowedHeaders: ['Content-Type', 'Authorization'] }));
+app.use(express.json());
+
+// DB & WebSocket
+require('./config/db');
+require('./websocket');
+
+// WebSocket Server
+const wss = new WebSocketServer({ server });
+const pins = {};
+
+wss.on('connection', (ws, req) => {
+    console.log('Pin terhubung');
+    ws.on('message', (message) => {
+        try {
+            const data = JSON.parse(message);
+            if (data.type === 'register' && data.siswaId) {
+                pins[data.siswaId] = ws;
+                console.log(`Pin siswa ${data.siswaId} terdaftar`);
+            }
+        } catch (e) {
+            console.error('Pesan tidak valid:', e);
+        }
+    });
+    ws.on('close', () => {
+        for (const id in pins) {
+            if (pins[id] === ws) {
+                delete pins[id];
+                console.log(`Pin siswa ${id} terputus`);
+            }
+        }
+    });
+});
+
+app.set('wss', wss);
+app.set('pins', pins);
+
+// Routes
+const authRoutes = require('./routes/authRoutes');
+const guruRoutes = require('./routes/guruRoutes');
+const adminRoutes = require('./routes/adminRoutes');
+const orangTuaRoutes = require('./routes/orangtuaRoutes');
+
+app.use('/api/auth', authRoutes);
+app.use('/api/guru', guruRoutes);
+app.use('/api/admin', adminRoutes);
+app.use('/api/orangtua', orangTuaRoutes);
+
+app.get('/', (req, res) => res.send('Backend berjalan'));
+
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+    console.log(`Server running on port ${PORT}`);
+});
