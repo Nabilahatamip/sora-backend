@@ -153,3 +153,17 @@ exports.exportCSV = async (req, res) => {
         res.status(500).json({ message: 'Server error' });
     }
 };
+
+exports.updateProfil = (req, res) => {
+    const { nama } = req.body;
+    const guruId = req.user.id;
+
+    db.query(
+        'UPDATE guru SET nama = ? WHERE id = ?',
+        [nama, guruId],
+        (err) => {
+            if (err) return res.status(500).json({ message: 'Server error' });
+            res.json({ message: 'Profil berhasil diupdate' });
+        }
+    );
+};
