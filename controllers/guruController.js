@@ -14,14 +14,32 @@ const storage = multer.diskStorage({
   }
 });
 
+// Daftar mimetype yang benar-benar valid untuk gambar
+const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+// Daftar ekstensi yang valid (fallback, jaga-jaga mimetype dari client tidak akurat)
+const ALLOWED_EXT = ['.jpeg', '.jpg', '.png', '.webp'];
+
 exports.upload = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 }, // max 5MB
   fileFilter: (req, file, cb) => {
-    const allowed = /jpeg|jpg|png|webp/;
-    const ok = allowed.test(path.extname(file.originalname).toLowerCase())
-             && allowed.test(file.mimetype);
-    ok ? cb(null, true) : cb(new Error('Hanya file gambar yang diizinkan'));
+    const ext = path.extname(file.originalname).toLowerCase();
+    const mime = (file.mimetype || '').toLowerCase();
+
+    const extOk = ALLOWED_EXT.includes(ext);
+    const mimeOk = ALLOWED_MIME.includes(mime);
+
+    // Log untuk membantu debugging jika masih ada kasus aneh dari client tertentu
+    console.log(`[uploadFoto] originalname="${file.originalname}" ext="${ext}" mimetype="${mime}" extOk=${extOk} mimeOk=${mimeOk}`);
+
+    // Loloskan jika SALAH SATU valid (ekstensi ATAU mimetype),
+    // karena beberapa browser/device kadang mengirim mimetype generic
+    // (misal application/octet-stream) walau filenya gambar asli.
+    if (extOk || mimeOk) {
+      return cb(null, true);
+    }
+
+    return cb(new Error('Hanya file gambar yang diizinkan (jpg, jpeg, png, webp)'));
   }
 });
 
