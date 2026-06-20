@@ -43,6 +43,25 @@ exports.upload = multer({
   }
 });
 
+// ── HELPER TANGGAL/WAKTU ───────────────────────────────────────────────────────
+// PENTING: Server (Railway) berjalan di timezone UTC, sementara aplikasi
+// dipakai dari WIB (UTC+7). Kalau kita pakai CURDATE()/CURTIME() bawaan MySQL,
+// aktivitas yang dilakukan dini hari WIB (00:00–07:00) akan tercatat ke
+// TANGGAL SEBELUMNYA karena di UTC itu masih "kemarin".
+//
+// Solusinya: SELALU pakai tanggal & waktu yang dikirim dari client (Flutter),
+// karena Flutter sudah mengirim tanggal lokal device yang benar.
+// CURDATE()/CURTIME() hanya dipakai sebagai fallback kalau client lupa kirim.
+
+function getTanggalFromBody(req) {
+  // Flutter mengirim format 'yyyy-MM-dd' di field 'tanggal'
+  const tanggal = req.body.tanggal;
+  if (tanggal && /^\d{4}-\d{2}-\d{2}$/.test(tanggal)) {
+    return tanggal;
+  }
+  return null; // null -> nanti pakai CURDATE() sebagai fallback di query
+}
+
 // ── UPLOAD FOTO GURU ──────────────────────────────────────────────────────────
 
 exports.uploadFoto = async (req, res) => {
@@ -158,15 +177,26 @@ exports.getChart = async (req, res) => {
 // ── GET CHART GENERAL ─────────────────────────────────────────────────────────
 
 exports.getChartGeneral = async (req, res) => {
-  const { kelas } = req.query;
+  const { kelas, tanggal } = req.query;
+  // FIX: dulu pakai CURDATE() (tanggal server/UTC). Sekarang pakai tanggal
+  // dari client kalau dikirim, supaya konsisten dengan getLaporan().
+  const tgl = (tanggal && /^\d{4}-\d{2}-\d{2}$/.test(tanggal))
+    ? tanggal
+    : null;
+
   try {
-    const [results] = await db.query(
-      `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
-       JOIN siswa ON aktivitas.siswa_id = siswa.id
-       WHERE siswa.kelas = ? AND aktivitas.tanggal = CURDATE()
-       GROUP BY aktivitas.tipe`,
-      [kelas]
-    );
+    const sql = tgl
+      ? `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
+         JOIN siswa ON aktivitas.siswa_id = siswa.id
+         WHERE siswa.kelas = ? AND aktivitas.tanggal = ?
+         GROUP BY aktivitas.tipe`
+      : `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
+         JOIN siswa ON aktivitas.siswa_id = siswa.id
+         WHERE siswa.kelas = ? AND aktivitas.tanggal = CURDATE()
+         GROUP BY aktivitas.tipe`;
+    const params = tgl ? [kelas, tgl] : [kelas];
+
+    const [results] = await db.query(sql, params);
     const data = { tegur: 0, panggil: 0, presensi: 0 };
     results.forEach(r => { data[r.tipe] = r.total; });
     res.json(data);
@@ -245,12 +275,23 @@ exports.getLaporanRange = async (req, res) => {
 
 exports.tegur = async (req, res) => {
   const { siswa_id, guru_id, mapel } = req.body;
+  // FIX: pakai tanggal dari client (Flutter sudah kirim tanggal lokal WIB
+  // yang benar). CURDATE() server (UTC) bisa salah tanggal pas dini hari.
+  const tgl = getTanggalFromBody(req);
   try {
-    await db.query(
-      `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-       VALUES (?, ?, ?, CURDATE(), CURTIME(), 'tegur')`,
-      [siswa_id, guru_id, mapel]
-    );
+    if (tgl) {
+      await db.query(
+        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+         VALUES (?, ?, ?, ?, CURTIME(), 'tegur')`,
+        [siswa_id, guru_id, mapel, tgl]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+         VALUES (?, ?, ?, CURDATE(), CURTIME(), 'tegur')`,
+        [siswa_id, guru_id, mapel]
+      );
+    }
     const pins = req.app.get('pins');
     if (pins[siswa_id]) pins[siswa_id].send(JSON.stringify({ tipe: 'tegur' }));
     res.json({ message: 'Tegur berhasil' });
@@ -264,12 +305,21 @@ exports.tegur = async (req, res) => {
 
 exports.panggil = async (req, res) => {
   const { siswa_id, guru_id, mapel } = req.body;
+  const tgl = getTanggalFromBody(req);
   try {
-    await db.query(
-      `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-       VALUES (?, ?, ?, CURDATE(), CURTIME(), 'panggil')`,
-      [siswa_id, guru_id, mapel]
-    );
+    if (tgl) {
+      await db.query(
+        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+         VALUES (?, ?, ?, ?, CURTIME(), 'panggil')`,
+        [siswa_id, guru_id, mapel, tgl]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+         VALUES (?, ?, ?, CURDATE(), CURTIME(), 'panggil')`,
+        [siswa_id, guru_id, mapel]
+      );
+    }
     const pins = req.app.get('pins');
     if (pins[siswa_id]) pins[siswa_id].send(JSON.stringify({ tipe: 'panggil' }));
     res.json({ message: 'Panggil berhasil' });
@@ -283,12 +333,21 @@ exports.panggil = async (req, res) => {
 
 exports.presensi = async (req, res) => {
   const { siswa_id, guru_id, mapel } = req.body;
+  const tgl = getTanggalFromBody(req);
   try {
-    await db.query(
-      `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-       VALUES (?, ?, ?, CURDATE(), CURTIME(), 'presensi')`,
-      [siswa_id, guru_id, mapel]
-    );
+    if (tgl) {
+      await db.query(
+        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+         VALUES (?, ?, ?, ?, CURTIME(), 'presensi')`,
+        [siswa_id, guru_id, mapel, tgl]
+      );
+    } else {
+      await db.query(
+        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+         VALUES (?, ?, ?, CURDATE(), CURTIME(), 'presensi')`,
+        [siswa_id, guru_id, mapel]
+      );
+    }
     const pins = req.app.get('pins');
     if (pins[siswa_id]) pins[siswa_id].send(JSON.stringify({ tipe: 'presensi' }));
     res.json({ message: 'Presensi berhasil' });
