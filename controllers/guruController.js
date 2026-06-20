@@ -176,6 +176,71 @@ exports.getChartGeneral = async (req, res) => {
   }
 };
 
+// ── GET LAPORAN RANGE (untuk export PDF rentang tanggal) ──────────────────────
+
+exports.getLaporanRange = async (req, res) => {
+  const { mapel, dari, sampai, kelas } = req.query;
+
+  if (!dari || !sampai) {
+    return res.status(400).json({ message: 'Parameter dari dan sampai wajib diisi' });
+  }
+
+  let sql = `
+    SELECT siswa.id, siswa.nama, siswa.nis, siswa.kelas,
+           aktivitas.mapel, aktivitas.tipe, aktivitas.tanggal
+    FROM aktivitas
+    JOIN siswa ON aktivitas.siswa_id = siswa.id
+    WHERE aktivitas.tanggal BETWEEN ? AND ?
+  `;
+  const params = [dari, sampai];
+  if (mapel) { sql += ' AND aktivitas.mapel = ?'; params.push(mapel); }
+  if (kelas) { sql += ' AND siswa.kelas = ?'; params.push(kelas); }
+  sql += ' ORDER BY aktivitas.tanggal ASC';
+
+  try {
+    const [results] = await db.query(sql, params);
+    const grouped = {};
+    results.forEach(row => {
+      const tgl = row.tanggal instanceof Date
+        ? row.tanggal.toISOString().split('T')[0]
+        : row.tanggal;
+      const key = `${tgl}_${row.kelas}_${row.mapel}`;
+      if (!grouped[key]) {
+        grouped[key] = {
+          tanggal: tgl,
+          namaKelas: `Kelas ${row.kelas}`,
+          mapel: row.mapel,
+          siswaMap: {}
+        };
+      }
+      if (!grouped[key].siswaMap[row.id]) {
+        grouped[key].siswaMap[row.id] = {
+          id: row.id,
+          nama: row.nama,
+          nis: row.nis,
+          presensi: 'Belum',
+          tegurCount: 0,
+          panggilCount: 0
+        };
+      }
+      if (row.tipe === 'presensi') grouped[key].siswaMap[row.id].presensi = 'Hadir';
+      if (row.tipe === 'tegur')    grouped[key].siswaMap[row.id].tegurCount++;
+      if (row.tipe === 'panggil')  grouped[key].siswaMap[row.id].panggilCount++;
+    });
+
+    const data = Object.values(grouped).map(g => ({
+      tanggal: g.tanggal,
+      namaKelas: g.namaKelas,
+      mapel: g.mapel,
+      records: Object.values(g.siswaMap)
+    }));
+    res.json(data);
+  } catch (err) {
+    console.log(err);
+    res.status(500).json({ message: 'Server error' });
+  }
+};
+
 // ── TEGUR ─────────────────────────────────────────────────────────────────────
 
 exports.tegur = async (req, res) => {
