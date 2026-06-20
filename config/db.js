@@ -8,19 +8,11 @@ const db = mysql.createPool({
     database: process.env.DB_NAME || 'sora_backend',
     waitForConnections: true,
     connectionLimit: 10,
-    // FIX: tanpa dua opsi ini, kolom DATE/DATETIME/TIMESTAMP otomatis
-    // dikonversi jadi objek JS Date oleh mysql2, lalu ikut tergeser ke
-    // timezone server (Railway = UTC) saat dibaca/ditulis kembali.
-    // Akibatnya tanggal yang sudah benar dikirim dari Flutter ('2026-06-21')
-    // bisa berubah jadi '2026-06-20' saat disimpan atau dibaca ulang.
-    //
-    // dateStrings: true  -> kolom tanggal dibaca sebagai STRING mentah
-    //                       ('2026-06-21'), tidak dikonversi ke Date/UTC sama sekali.
-    // timezone: '+07:00' -> kalau ada operasi yang tetap perlu konversi
-    //                       (misal NOW()/CURDATE() di kolom DATETIME lain),
-    //                       session MySQL dianggap WIB, bukan UTC.
-    dateStrings: true,
-    timezone: '+07:00',
+    // CATATAN: dateStrings + timezone custom sempat dicoba di sini untuk
+    // fix masalah timezone, TAPI ternyata menyebabkan kolom tanggal/waktu
+    // jadi NULL saat dipakai bareng CURDATE()/CURTIME() di query INSERT.
+    // Dikembalikan ke default. Fix timezone yang benar sekarang dilakukan
+    // di level kode JavaScript (controller), bukan di level driver MySQL.
 });
 
 db.getConnection()

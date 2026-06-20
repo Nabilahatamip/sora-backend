@@ -14,52 +14,55 @@ const storage = multer.diskStorage({
   }
 });
 
-// Daftar mimetype yang benar-benar valid untuk gambar
 const ALLOWED_MIME = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
-// Daftar ekstensi yang valid (fallback, jaga-jaga mimetype dari client tidak akurat)
 const ALLOWED_EXT = ['.jpeg', '.jpg', '.png', '.webp'];
 
 exports.upload = multer({
   storage,
-  limits: { fileSize: 5 * 1024 * 1024 }, // max 5MB
+  limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     const ext = path.extname(file.originalname).toLowerCase();
     const mime = (file.mimetype || '').toLowerCase();
-
     const extOk = ALLOWED_EXT.includes(ext);
     const mimeOk = ALLOWED_MIME.includes(mime);
-
-    // Log untuk membantu debugging jika masih ada kasus aneh dari client tertentu
     console.log(`[uploadFoto] originalname="${file.originalname}" ext="${ext}" mimetype="${mime}" extOk=${extOk} mimeOk=${mimeOk}`);
-
-    // Loloskan jika SALAH SATU valid (ekstensi ATAU mimetype),
-    // karena beberapa browser/device kadang mengirim mimetype generic
-    // (misal application/octet-stream) walau filenya gambar asli.
     if (extOk || mimeOk) {
       return cb(null, true);
     }
-
     return cb(new Error('Hanya file gambar yang diizinkan (jpg, jpeg, png, webp)'));
   }
 });
 
-// ── HELPER TANGGAL/WAKTU ───────────────────────────────────────────────────────
-// PENTING: Server (Railway) berjalan di timezone UTC, sementara aplikasi
-// dipakai dari WIB (UTC+7). Kalau kita pakai CURDATE()/CURTIME() bawaan MySQL,
-// aktivitas yang dilakukan dini hari WIB (00:00–07:00) akan tercatat ke
-// TANGGAL SEBELUMNYA karena di UTC itu masih "kemarin".
-//
-// Solusinya: SELALU pakai tanggal & waktu yang dikirim dari client (Flutter),
-// karena Flutter sudah mengirim tanggal lokal device yang benar.
-// CURDATE()/CURTIME() hanya dipakai sebagai fallback kalau client lupa kirim.
+// ── HELPER TANGGAL/WAKTU (FIX FINAL) ───────────────────────────────────────────
+// PENTING: jangan pernah pakai CURDATE()/CURTIME() MySQL atau opsi driver
+// (dateStrings/timezone) untuk ini lagi — keduanya sudah terbukti bermasalah
+// (CURDATE/CURTIME server = UTC salah hari saat dini hari WIB; opsi driver
+// custom malah bikin kolom jadi NULL saat dicampur literal SQL di query yang
+// sama). Solusi paling aman & predictable: hitung tanggal & jam WIB manual
+// di JavaScript, lalu kirim sebagai VALUE biasa ke query (bukan literal SQL).
 
-function getTanggalFromBody(req) {
-  // Flutter mengirim format 'yyyy-MM-dd' di field 'tanggal'
+function getTanggalWIB(req) {
+  // 1) Prioritas: tanggal yang dikirim Flutter (format 'yyyy-MM-dd')
   const tanggal = req.body.tanggal;
   if (tanggal && /^\d{4}-\d{2}-\d{2}$/.test(tanggal)) {
     return tanggal;
   }
-  return null; // null -> nanti pakai CURDATE() sebagai fallback di query
+  // 2) Fallback: hitung sendiri dari waktu server + offset WIB (UTC+7),
+  //    BUKAN dari CURDATE() MySQL yang ikut timezone server (UTC).
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000); // geser ke WIB
+  const yyyy = now.getUTCFullYear();
+  const mm = String(now.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(now.getUTCDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function getWaktuWIB() {
+  // Jam saat ini dalam WIB (UTC+7), dihitung manual, format 'HH:mm:ss'
+  const now = new Date(Date.now() + 7 * 60 * 60 * 1000);
+  const hh = String(now.getUTCHours()).padStart(2, '0');
+  const mi = String(now.getUTCMinutes()).padStart(2, '0');
+  const ss = String(now.getUTCSeconds()).padStart(2, '0');
+  return `${hh}:${mi}:${ss}`;
 }
 
 // ── UPLOAD FOTO GURU ──────────────────────────────────────────────────────────
@@ -69,16 +72,10 @@ exports.uploadFoto = async (req, res) => {
     if (!req.file) {
       return res.status(400).json({ message: 'Tidak ada file yang diupload' });
     }
-
     const guruId = req.user.id;
     const fotoUrl = `uploads/${req.file.filename}`;
-
     await db.query('UPDATE guru SET foto = ? WHERE id = ?', [fotoUrl, guruId]);
-
-    res.json({
-      message: 'Foto berhasil diupload',
-      foto: fotoUrl
-    });
+    res.json({ message: 'Foto berhasil diupload', foto: fotoUrl });
   } catch (err) {
     console.log(err);
     res.status(500).json({ message: 'Server error' });
@@ -105,7 +102,7 @@ exports.getSiswa = async (req, res) => {
 
 exports.getLaporan = async (req, res) => {
   const { mapel, tanggal, kelas } = req.query;
-  const tgl = tanggal || new Date().toISOString().split('T')[0];
+  const tgl = (tanggal && /^\d{4}-\d{2}-\d{2}$/.test(tanggal)) ? tanggal : getTanggalWIB({ body: {} });
 
   let sql = `
     SELECT siswa.id, siswa.nama, siswa.nis, siswa.kelas,
@@ -178,23 +175,16 @@ exports.getChart = async (req, res) => {
 
 exports.getChartGeneral = async (req, res) => {
   const { kelas, tanggal } = req.query;
-  // FIX: dulu pakai CURDATE() (tanggal server/UTC). Sekarang pakai tanggal
-  // dari client kalau dikirim, supaya konsisten dengan getLaporan().
   const tgl = (tanggal && /^\d{4}-\d{2}-\d{2}$/.test(tanggal))
     ? tanggal
-    : null;
+    : getTanggalWIB({ body: {} });
 
   try {
-    const sql = tgl
-      ? `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
+    const sql = `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
          JOIN siswa ON aktivitas.siswa_id = siswa.id
          WHERE siswa.kelas = ? AND aktivitas.tanggal = ?
-         GROUP BY aktivitas.tipe`
-      : `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
-         JOIN siswa ON aktivitas.siswa_id = siswa.id
-         WHERE siswa.kelas = ? AND aktivitas.tanggal = CURDATE()
          GROUP BY aktivitas.tipe`;
-    const params = tgl ? [kelas, tgl] : [kelas];
+    const params = [kelas, tgl];
 
     const [results] = await db.query(sql, params);
     const data = { tegur: 0, panggil: 0, presensi: 0 };
@@ -275,23 +265,14 @@ exports.getLaporanRange = async (req, res) => {
 
 exports.tegur = async (req, res) => {
   const { siswa_id, guru_id, mapel } = req.body;
-  // FIX: pakai tanggal dari client (Flutter sudah kirim tanggal lokal WIB
-  // yang benar). CURDATE() server (UTC) bisa salah tanggal pas dini hari.
-  const tgl = getTanggalFromBody(req);
+  const tgl = getTanggalWIB(req);
+  const jam = getWaktuWIB();
   try {
-    if (tgl) {
-      await db.query(
-        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-         VALUES (?, ?, ?, ?, CURTIME(), 'tegur')`,
-        [siswa_id, guru_id, mapel, tgl]
-      );
-    } else {
-      await db.query(
-        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-         VALUES (?, ?, ?, CURDATE(), CURTIME(), 'tegur')`,
-        [siswa_id, guru_id, mapel]
-      );
-    }
+    await db.query(
+      `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+       VALUES (?, ?, ?, ?, ?, 'tegur')`,
+      [siswa_id, guru_id, mapel, tgl, jam]
+    );
     const pins = req.app.get('pins');
     if (pins[siswa_id]) pins[siswa_id].send(JSON.stringify({ tipe: 'tegur' }));
     res.json({ message: 'Tegur berhasil' });
@@ -305,21 +286,14 @@ exports.tegur = async (req, res) => {
 
 exports.panggil = async (req, res) => {
   const { siswa_id, guru_id, mapel } = req.body;
-  const tgl = getTanggalFromBody(req);
+  const tgl = getTanggalWIB(req);
+  const jam = getWaktuWIB();
   try {
-    if (tgl) {
-      await db.query(
-        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-         VALUES (?, ?, ?, ?, CURTIME(), 'panggil')`,
-        [siswa_id, guru_id, mapel, tgl]
-      );
-    } else {
-      await db.query(
-        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-         VALUES (?, ?, ?, CURDATE(), CURTIME(), 'panggil')`,
-        [siswa_id, guru_id, mapel]
-      );
-    }
+    await db.query(
+      `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+       VALUES (?, ?, ?, ?, ?, 'panggil')`,
+      [siswa_id, guru_id, mapel, tgl, jam]
+    );
     const pins = req.app.get('pins');
     if (pins[siswa_id]) pins[siswa_id].send(JSON.stringify({ tipe: 'panggil' }));
     res.json({ message: 'Panggil berhasil' });
@@ -333,21 +307,14 @@ exports.panggil = async (req, res) => {
 
 exports.presensi = async (req, res) => {
   const { siswa_id, guru_id, mapel } = req.body;
-  const tgl = getTanggalFromBody(req);
+  const tgl = getTanggalWIB(req);
+  const jam = getWaktuWIB();
   try {
-    if (tgl) {
-      await db.query(
-        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-         VALUES (?, ?, ?, ?, CURTIME(), 'presensi')`,
-        [siswa_id, guru_id, mapel, tgl]
-      );
-    } else {
-      await db.query(
-        `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
-         VALUES (?, ?, ?, CURDATE(), CURTIME(), 'presensi')`,
-        [siswa_id, guru_id, mapel]
-      );
-    }
+    await db.query(
+      `INSERT INTO aktivitas (siswa_id, guru_id, mapel, tanggal, waktu, tipe)
+       VALUES (?, ?, ?, ?, ?, 'presensi')`,
+      [siswa_id, guru_id, mapel, tgl, jam]
+    );
     const pins = req.app.get('pins');
     if (pins[siswa_id]) pins[siswa_id].send(JSON.stringify({ tipe: 'presensi' }));
     res.json({ message: 'Presensi berhasil' });
