@@ -163,7 +163,7 @@ exports.getChartGeneral = async (req, res) => {
     const [results] = await db.query(
       `SELECT aktivitas.tipe, COUNT(*) as total FROM aktivitas
        JOIN siswa ON aktivitas.siswa_id = siswa.id
-       WHERE siswa.kelas = ?
+       WHERE siswa.kelas = ? AND aktivitas.tanggal = CURDATE()
        GROUP BY aktivitas.tipe`,
       [kelas]
     );
