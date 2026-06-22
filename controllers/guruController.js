@@ -88,7 +88,7 @@ exports.getSiswa = async (req, res) => {
   const kelas = req.query.kelas;
   try {
     const [results] = await db.query(
-      'SELECT * FROM siswa WHERE kelas = ?',
+      'SELECT id, nama, nis, esp_ip FROM siswa WHERE kelas = ?',  // ← tambah esp_ip
       [kelas]
     );
     res.json(results);
